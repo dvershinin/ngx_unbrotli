@@ -162,6 +162,23 @@ ngx_http_unbrotli_header_filter(ngx_http_request_t *r)
         }
     }
 
+    r->headers_out.content_encoding->hash = 0;
+    r->headers_out.content_encoding = NULL;
+
+    ngx_http_clear_content_length(r);
+    ngx_http_clear_accept_ranges(r);
+    ngx_http_weak_etag(r);
+
+    /* 304, 204 and HEAD responses carry no body to decompress */
+
+    if (r->header_only
+        || r->method == NGX_HTTP_HEAD
+        || r->headers_out.status == NGX_HTTP_NOT_MODIFIED
+        || r->headers_out.status == NGX_HTTP_NO_CONTENT)
+    {
+        return ngx_http_next_header_filter(r);
+    }
+
     ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_unbrotli_ctx_t));
     if (ctx == NULL) {
         return NGX_ERROR;
@@ -172,13 +189,6 @@ ngx_http_unbrotli_header_filter(ngx_http_request_t *r)
     ctx->request = r;
 
     r->filter_need_in_memory = 1;
-
-    r->headers_out.content_encoding->hash = 0;
-    r->headers_out.content_encoding = NULL;
-
-    ngx_http_clear_content_length(r);
-    ngx_http_clear_accept_ranges(r);
-    ngx_http_weak_etag(r);
 
     return ngx_http_next_header_filter(r);
 }
@@ -583,7 +593,11 @@ ngx_http_unbrotli_filter_inflate(ngx_http_request_t *r,
 
     if (ctx->flush == IN_BUF_FINISH && ctx->avail_in == 0) {
 
-        if (rc != BROTLI_DECODER_RESULT_SUCCESS) {
+        /* an empty body is not a truncated stream */
+
+        if (rc != BROTLI_DECODER_RESULT_SUCCESS
+            && BrotliDecoderIsUsed(ctx->brotli_decoder))
+        {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                           "BrotliDecoderDecompressStream() returned %d on response end", rc);
             return NGX_ERROR;
